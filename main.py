@@ -46,6 +46,8 @@ class GroupStatsPlugin(Star):
         self._stats: dict[str, dict[str, dict[str, dict]]] = {}
         # 日报去重记录：group_id -> 已推送日期
         self._report_dates: dict[str, str] = {}
+        # 群号 -> 平台实例 ID 映射（从消息事件自动学习，用于日报推送定位平台）
+        self._group_platforms: dict[str, str] = {}
         # 后台日报任务
         self._report_task: asyncio.Task | None = None
         self._report_running = False
@@ -194,6 +196,8 @@ class GroupStatsPlugin(Star):
             group_id = event.get_group_id()
             if not group_id:
                 return
+            # 记录群所属平台实例 ID（供日报推送定位平台）
+            self._group_platforms[str(group_id)] = str(event.get_platform_id() or "")
             sender_id = event.get_sender_id()
             if not sender_id:
                 return
@@ -207,8 +211,11 @@ class GroupStatsPlugin(Star):
             text = (event.message_str or "").strip()
             if not text:
                 return
-            # 只统计普通文本消息，跳过命令消息
-            if text.startswith("/") or text.startswith("／"):
+            # 跳过命令消息：message_str 可能已被 waking_check 剥离唤醒前缀（如 "/"），
+            # 需用 message_obj 保留的原始文本判断，避免把 /指令 计入普通发言
+            raw = getattr(event.message_obj, "message_str", None) or text
+            raw = str(raw).strip()
+            if raw.startswith("/") or raw.startswith("／"):
                 return
             chars = len(text)
             images = sum(1 for seg in event.get_messages() if self._is_image_segment(seg))
@@ -418,6 +425,13 @@ class GroupStatsPlugin(Star):
                 logger.warning(f"日报任务异常: {e}")
             await asyncio.sleep(30)
 
+    def _resolve_platform(self, group_id: str) -> str:
+        """确定日报目标群所属平台 ID：配置优先，其次自动学习映射，再否则为空"""
+        v = self._cfg_str("stats_report_platform").strip()
+        if v:
+            return v
+        return self._group_platforms.get(str(group_id), "")
+
     async def _check_and_send_reports(self):
         """检查是否到达日报推送时间，到点向目标群推送当日统计摘要（同日同群去重）"""
         if not self._cfg_bool("stats_report_enable", False):
@@ -433,16 +447,23 @@ class GroupStatsPlugin(Star):
         for gid in self._cfg_list("stats_report_groups"):
             if self._report_dates.get(gid) == today:
                 continue  # 同日同群已推送，去重
+            platform = self._resolve_platform(gid)
+            if not platform:
+                logger.warning(
+                    f"【{PLUGIN_NAME}】群 {gid} 的平台 ID 未知"
+                    f"（可在 stats_report_platform 中指定，或等该群有消息后自动学习），本次跳过日报"
+                )
+                continue
             text = self._build_daily_report_text(gid, today)
             if not text:
                 continue  # 当日无数据，不推送
-            await self._send_report(gid, text)
+            await self._send_report(platform, gid, text)
             self._report_dates[gid] = today
             self._save_report_dates()
 
-    async def _send_report(self, group_id: str, text: str):
-        """向目标群推送日报（UMO 格式 default:GroupMessage:群号）"""
-        umo = f"default:GroupMessage:{group_id}"
+    async def _send_report(self, platform: str, group_id: str, text: str):
+        """向目标群推送日报（UMO 格式 平台ID:GroupMessage:群号）"""
+        umo = f"{platform}:GroupMessage:{group_id}"
         try:
             await self.context.send_message(umo, MessageChain([Plain(text)]))
         except Exception as e:

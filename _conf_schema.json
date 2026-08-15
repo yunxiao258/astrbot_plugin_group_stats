@@ -14,6 +14,11 @@
     "type": "string",
     "default": ""
   },
+  "stats_report_platform": {
+    "description": "日报目标群所属平台实例 ID（如 云晓）。可留空：插件会自动学习目标群的平台（该群有消息后自动生效）",
+    "type": "string",
+    "default": ""
+  },
   "stats_keep_days": {
     "description": "统计数据保留天数，超过自动清理（默认 30 天）",
     "type": "int",
