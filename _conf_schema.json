@@ -1,0 +1,27 @@
+{
+  "stats_report_enable": {
+    "description": "是否启用每日自动群日报推送",
+    "type": "bool",
+    "default": false
+  },
+  "stats_report_time": {
+    "description": "每日日报推送时间（24 小时制 HH:MM，如 22:00）",
+    "type": "string",
+    "default": "22:00"
+  },
+  "stats_report_groups": {
+    "description": "自动日报推送的目标群号列表，多个用英文逗号分隔，如 123456789,987654321",
+    "type": "string",
+    "default": ""
+  },
+  "stats_keep_days": {
+    "description": "统计数据保留天数，超过自动清理（默认 30 天）",
+    "type": "int",
+    "default": 30
+  },
+  "stats_ignore_bots": {
+    "description": "是否忽略机器人账号的发言统计（含机器人自身，自身始终忽略）",
+    "type": "bool",
+    "default": true
+  }
+}
