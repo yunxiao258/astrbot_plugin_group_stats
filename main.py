@@ -118,16 +118,23 @@ class GroupStatsPlugin(Star):
         if isinstance(v, (int, float)):
             return [str(v)]
         if isinstance(v, str):
-            return [x.strip() for x in v.split(",") if x.strip()]
+            return [
+                x.strip() for x in v.replace("，", ",").split(",") if x.strip()
+            ]
         return []
 
     # ========== 数据持久化 ==========
 
     def _load_all(self):
         """加载全部持久化数据并清理过期统计"""
-        self._load_stats()
-        self._load_report_dates()
-        self._cleanup_old()
+        try:
+            self._load_stats()
+            self._load_report_dates()
+            self._cleanup_old()
+        except Exception as e:
+            logger.warning(f"初始化统计数据失败，已重置: {e}")
+            self._stats = {}
+            self._report_dates = {}
 
     def _load_stats(self):
         """从磁盘加载统计数据（校验结构，损坏时重置）"""
@@ -137,7 +144,25 @@ class GroupStatsPlugin(Star):
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict):
-                    self._stats = data
+                    # 嵌套结构校验：非法值（非 dict 的群/日期/成员）全部剔除，避免后续崩溃
+                    cleaned = {}
+                    for gid, days in data.items():
+                        if not isinstance(days, dict):
+                            continue
+                        valid_days = {}
+                        for date, members in days.items():
+                            if not isinstance(date, str) or not isinstance(members, dict):
+                                continue
+                            valid_members = {
+                                str(uid): rec
+                                for uid, rec in members.items()
+                                if isinstance(rec, dict)
+                            }
+                            if valid_members:
+                                valid_days[date] = valid_members
+                        if valid_days:
+                            cleaned[str(gid)] = valid_days
+                    self._stats = cleaned
                 else:
                     logger.warning("统计数据结构异常，已重置")
         except Exception as e:
@@ -169,12 +194,14 @@ class GroupStatsPlugin(Star):
             logger.warning(f"加载日报记录失败: {e}")
 
     def _save_report_dates(self):
-        """持久化日报去重记录（同日同群不重复推送）"""
+        """持久化日报去重记录（同日同群不重复推送；临时文件 + 原子替换防损坏）"""
         try:
             os.makedirs(self.data_dir, exist_ok=True)
             path = os.path.join(self.data_dir, "report_dates.json")
-            with open(path, "w", encoding="utf-8") as f:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._report_dates, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
         except Exception as e:
             logger.warning(f"保存日报记录失败: {e}")
 
@@ -183,10 +210,15 @@ class GroupStatsPlugin(Star):
         keep = max(1, self._cfg_int("stats_keep_days", 30))
         cutoff = (self._now() - timedelta(days=keep)).strftime("%Y-%m-%d")
         for gid in list(self._stats.keys()):
-            for date in list(self._stats[gid].keys()):
-                if date < cutoff:
-                    del self._stats[gid][date]
-            if not self._stats[gid]:
+            days = self._stats[gid]
+            if not isinstance(days, dict):
+                # 脏数据防御：非 dict 直接丢弃该群数据
+                del self._stats[gid]
+                continue
+            for date in list(days.keys()):
+                if not isinstance(date, str) or date < cutoff:
+                    del days[date]
+            if not days:
                 del self._stats[gid]
 
     # ========== 消息统计 ==========
@@ -266,8 +298,11 @@ class GroupStatsPlugin(Star):
     def _aggregate(self, group_id: str, date_from: str, date_to: str) -> dict:
         """聚合 [date_from, date_to] 日期区间的成员统计数据（含脏数据防御）"""
         agg: dict[str, dict] = {}
-        for date, members in (self._stats.get(group_id) or {}).items():
-            if not (date_from <= date <= date_to):
+        days = self._stats.get(group_id)
+        if not isinstance(days, dict):
+            return agg
+        for date, members in days.items():
+            if not isinstance(date, str) or not (date_from <= date <= date_to):
                 continue
             if not isinstance(members, dict):
                 continue
@@ -328,7 +363,15 @@ class GroupStatsPlugin(Star):
             f"👥 参与人数: {len(agg)} 人",
         ]
         if agg:
-            top = max(agg.items(), key=lambda kv: (kv[1]["count"], -int(kv[0])))
+            # 非纯数字 ID（如微信 wxid_xxx）也能排序：数字优先，其余按字符串
+            def _sort_key(kv):
+                uid = kv[0]
+                try:
+                    return (kv[1]["count"], -int(uid))
+                except (TypeError, ValueError):
+                    return (kv[1]["count"], 0)
+
+            top = max(agg.items(), key=_sort_key)
             lines.append(f"🔥 最活跃成员: {top[1]['name']} ({top[1]['count']} 条)")
         else:
             lines.append("🔥 今日暂无发言记录")
