@@ -88,7 +88,13 @@ class GroupStatsPlugin(Star):
         if isinstance(v, (int, float)):
             return bool(v)
         if isinstance(v, str):
-            return v.strip().lower() in ("1", "true", "yes", "on")
+            s = v.strip().lower()
+            if s in ("1", "true", "yes", "on"):
+                return True
+            if s in ("0", "false", "no", "off", ""):
+                return False
+            # 未识别字符串回退默认，避免误关功能
+            return default
         return default
 
     def _cfg_int(self, key: str, default: int = 0) -> int:
