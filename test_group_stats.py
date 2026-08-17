@@ -78,6 +78,9 @@ class FakeEvent:
     def get_self_id(self):
         return self.message_obj.self_id
 
+    def get_platform_id(self):
+        return "default"
+
     def get_messages(self):
         return self.message_obj.message
 
@@ -315,6 +318,7 @@ class TestDailyReport(unittest.TestCase):
             "stats_report_enable": enable,
             "stats_report_time": time_,
             "stats_report_groups": groups,
+            "stats_report_platform": "default",
         }, now=now or datetime(2026, 8, 15, 22, 1, 0))
 
     def test_reach_time_sends_once(self):

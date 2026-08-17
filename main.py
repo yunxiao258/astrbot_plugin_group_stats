@@ -144,13 +144,15 @@ class GroupStatsPlugin(Star):
             logger.warning(f"加载统计数据失败: {e}")
 
     def _save_stats(self):
-        """统计数据落盘（落盘前先清理过期数据）"""
+        """统计数据落盘（落盘前先清理过期数据；临时文件 + 原子替换防损坏）"""
         try:
             self._cleanup_old()
             os.makedirs(self.data_dir, exist_ok=True)
             path = os.path.join(self.data_dir, "stats.json")
-            with open(path, "w", encoding="utf-8") as f:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._stats, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
         except Exception as e:
             logger.warning(f"保存统计数据失败: {e}")
 
@@ -278,10 +280,18 @@ class GroupStatsPlugin(Star):
                     "chars": 0,
                     "images": 0,
                 })
-                item["count"] += int(rec.get("count", 0) or 0)
-                item["chars"] += int(rec.get("chars", 0) or 0)
-                item["images"] += int(rec.get("images", 0) or 0)
+                # 脏数据防御：字段非法（如 "abc"）按 0 处理，不拖垮整个统计
+                item["count"] += self._safe_int(rec.get("count"), 0)
+                item["chars"] += self._safe_int(rec.get("chars"), 0)
+                item["images"] += self._safe_int(rec.get("images"), 0)
         return agg
+
+    def _safe_int(self, value, default: int = 0) -> int:
+        """安全整数转换：脏值回退默认"""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     def _build_ranking_text(self, group_id: str, scope: str, top_n: int = 10) -> str:
         """构建今日/本周发言排行文本（scope: today / week）"""
@@ -406,15 +416,26 @@ class GroupStatsPlugin(Star):
 
     # ========== 自动日报 ==========
 
+    async def initialize(self) -> None:
+        """插件加载/重载时启动日报定时任务"""
+        await self._start_report_loop()
+
     @filter.on_astrbot_loaded()
     async def _start_report_loop(self):
-        """AstrBot 加载完成后启动日报定时任务"""
+        """启动日报定时任务（幂等：重复调用不会重复启动）"""
         if not self._cfg_bool("stats_report_enable", False):
             return
         if self._report_running:
             return
         self._report_running = True
         self._report_task = asyncio.create_task(self._report_loop())
+        self._report_task.add_done_callback(
+            lambda t: (
+                logger.error(f"日报任务异常退出: {t.exception()}")
+                if not t.cancelled() and t.exception()
+                else None
+            )
+        )
 
     async def _report_loop(self):
         """后台定时循环：每 30 秒检查一次日报触发条件"""
@@ -457,17 +478,19 @@ class GroupStatsPlugin(Star):
             text = self._build_daily_report_text(gid, today)
             if not text:
                 continue  # 当日无数据，不推送
-            await self._send_report(platform, gid, text)
-            self._report_dates[gid] = today
-            self._save_report_dates()
+            if await self._send_report(platform, gid, text):
+                self._report_dates[gid] = today
+                self._save_report_dates()
 
-    async def _send_report(self, platform: str, group_id: str, text: str):
-        """向目标群推送日报（UMO 格式 平台ID:GroupMessage:群号）"""
+    async def _send_report(self, platform: str, group_id: str, text: str) -> bool:
+        """向目标群推送日报（UMO 格式 平台ID:GroupMessage:群号）；成功返回 True，失败不记账"""
         umo = f"{platform}:GroupMessage:{group_id}"
         try:
             await self.context.send_message(umo, MessageChain([Plain(text)]))
+            return True
         except Exception as e:
             logger.warning(f"推送日报到群 {group_id} 失败: {e}")
+            return False
 
     async def terminate(self):
         """插件卸载：取消后台任务并落盘数据"""
