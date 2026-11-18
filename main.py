@@ -16,7 +16,7 @@ from astrbot.api.star import Context, Star, register
 PLUGIN_NAME = "astrbot_plugin_group_stats"
 PLUGIN_AUTHOR = "云晓"
 PLUGIN_DESC = "群活跃度统计与日报/周报"
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_VERSION = "1.1.0"
 
 # 命令参数解析正则：兼容 /、／ 全角斜杠与无斜杠前缀
 COMMAND_RE = re.compile(r"^[\/／]?\s*群统计\s*(.*)$")
@@ -63,11 +63,11 @@ except AttributeError:
 class GroupStatsPlugin(Star):
     """群活跃度统计与日报/周报插件"""
 
-    def __init__(self, context: Context, config: AstrBotConfig = None):
+    def __init__(self, context: Context, config: AstrBotConfig = None, data_dir: str | None = None):
         super().__init__(context)
         self.config = config or {}
         # 数据目录：plugin_data/astrbot_plugin_group_stats（首次落盘时才创建）
-        self.data_dir = self._default_data_dir()
+        self.data_dir = data_dir or self._default_data_dir()
         # 统计内存结构：group_id -> 日期(YYYY-MM-DD) -> user_id -> {name,count,chars,images}
         self._stats: dict[str, dict[str, dict[str, dict]]] = {}
         # 热词计数：group_id -> 日期 -> 词组 -> 次数（独立文件 extras.json）
@@ -185,6 +185,7 @@ class GroupStatsPlugin(Star):
 
     def _load_stats(self):
         """从磁盘加载统计数据（校验结构，损坏时重置）"""
+        self._stats = {}
         path = os.path.join(self.data_dir, "stats.json")
         try:
             if os.path.exists(path):
@@ -230,6 +231,7 @@ class GroupStatsPlugin(Star):
 
     def _load_report_dates(self):
         """加载日报去重记录"""
+        self._report_dates = {}
         path = os.path.join(self.data_dir, "report_dates.json")
         try:
             if os.path.exists(path):
@@ -254,6 +256,8 @@ class GroupStatsPlugin(Star):
 
     def _load_extras(self):
         """加载热词与活跃时段数据（extras.json，结构校验，损坏时重置）"""
+        self._hotwords = {}
+        self._hours = {}
         path = os.path.join(self.data_dir, "extras.json")
         try:
             if os.path.exists(path):
@@ -300,6 +304,7 @@ class GroupStatsPlugin(Star):
 
     def _load_achievements(self):
         """加载成就勋章数据（achievements.json，结构校验，损坏时重置）"""
+        self._achievements = {}
         path = os.path.join(self.data_dir, "achievements.json")
         try:
             if os.path.exists(path):
@@ -343,6 +348,7 @@ class GroupStatsPlugin(Star):
 
     def _load_points(self):
         """加载积分数据（points.json，结构校验，损坏时重置）"""
+        self._points = {}
         path = os.path.join(self.data_dir, "points.json")
         try:
             if os.path.exists(path):
@@ -1099,12 +1105,15 @@ class GroupStatsPlugin(Star):
         """插件加载/重载时启动日报定时任务"""
         await self._start_report_loop()
 
-    @filter.on_astrbot_loaded()
     async def _start_report_loop(self):
         """启动日报定时任务（幂等：重复调用不会重复启动）"""
         if not self._cfg_bool("stats_report_enable", False):
             return
         if self._report_running:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
             return
         self._report_running = True
         self._report_task = asyncio.create_task(self._report_loop())

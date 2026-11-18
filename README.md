@@ -3,7 +3,7 @@
 AstrBot 群活跃度统计与日报/周报插件：自动统计每个群每位成员的每日发言情况，支持发言排行、热词话题、活跃时段、成就勋章、积分制活跃榜查询，并可定时向指定群推送每日统计摘要。
 
 - **作者**：云晓
-- **版本**：1.0.0
+- **版本**：1.1.0
 - **许可证**：MIT（详见 [LICENSE](LICENSE)）
 
 ## 功能
@@ -119,8 +119,8 @@ AstrBot 群活跃度统计与日报/周报插件：自动统计每个群每位�
 在插件目录执行：
 
 ```
-D:\uv-tools\astrbot\Scripts\python.exe test_group_stats.py
-D:\uv-tools\astrbot\Scripts\python.exe test_group_stats_extra.py
+python test_group_stats.py
+python test_group_stats_extra.py
 ```
 
 测试使用 FakeEvent / FakeContext 替身与临时数据目录，不联网、不写真实 plugin_data。

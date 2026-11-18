@@ -8,8 +8,9 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+from unittest import mock
 
-sys.path.insert(0, r"D:\astrbot\data\plugins")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from astrbot_plugin_group_stats.main import GroupStatsPlugin  # noqa: E402
 
@@ -27,16 +28,9 @@ def tearDownModule():
 
 def make_plugin(config=None, now=None, context=None):
     """构造插件实例：数据目录重定向到临时目录，可注入 mock 时钟"""
-    p = GroupStatsPlugin(context or FakeContext(), config or {})
-    p._stats = {}
-    p._report_dates = {}
-    p._hotwords = {}
-    p._hours = {}
-    p._achievements = {}
-    p._points = {}
     tmp = tempfile.mkdtemp(prefix="group_stats_extra_test_")
     _tmp_dirs.append(tmp)
-    p.data_dir = tmp
+    p = GroupStatsPlugin(context or FakeContext(), config or {}, data_dir=tmp)
     if now is not None:
         p._now = lambda: now
     return p
@@ -537,9 +531,8 @@ class TestExtraPersistence(unittest.TestCase):
         path = os.path.join(p.data_dir, "extras.json")
         self.assertTrue(os.path.exists(path))
         # 新实例恢复
-        p2 = GroupStatsPlugin(FakeContext(), {})
-        p2.data_dir = p.data_dir
-        p2._load_extras()
+        with mock.patch.object(GroupStatsPlugin, "_now", return_value=FIXED_NOW):
+            p2 = GroupStatsPlugin(FakeContext(), {}, data_dir=p.data_dir)
         self.assertEqual(p2._hotwords, {"123": {"2026-08-15": {"天气": 3}}})
         self.assertEqual(p2._hours, {"123": {"2026-08-15": {"12": 3}}})
 
@@ -549,9 +542,7 @@ class TestExtraPersistence(unittest.TestCase):
         p._save_achievements()
         path = os.path.join(p.data_dir, "achievements.json")
         self.assertTrue(os.path.exists(path))
-        p2 = GroupStatsPlugin(FakeContext(), {})
-        p2.data_dir = p.data_dir
-        p2._load_achievements()
+        p2 = GroupStatsPlugin(FakeContext(), {}, data_dir=p.data_dir)
         self.assertEqual(p2._achievements["123"]["1"]["badges"]["早起鸟"], "2026-08-15")
 
     def test_save_and_reload_points(self):
@@ -560,9 +551,8 @@ class TestExtraPersistence(unittest.TestCase):
         p._save_points()
         path = os.path.join(p.data_dir, "points.json")
         self.assertTrue(os.path.exists(path))
-        p2 = GroupStatsPlugin(FakeContext(), {})
-        p2.data_dir = p.data_dir
-        p2._load_points()
+        with mock.patch.object(GroupStatsPlugin, "_now", return_value=FIXED_NOW):
+            p2 = GroupStatsPlugin(FakeContext(), {}, data_dir=p.data_dir)
         self.assertEqual(p2._points["123"]["1"]["points"]["2026-08-15"], 42)
 
     def test_load_corrupted_extras_reset(self):
@@ -570,9 +560,7 @@ class TestExtraPersistence(unittest.TestCase):
         path = os.path.join(p.data_dir, "extras.json")
         with open(path, "w", encoding="utf-8") as f:
             f.write("{broken")
-        p2 = GroupStatsPlugin(FakeContext(), {})
-        p2.data_dir = p.data_dir
-        p2._load_extras()
+        p2 = GroupStatsPlugin(FakeContext(), {}, data_dir=p.data_dir)
         self.assertEqual(p2._hotwords, {})
         self.assertEqual(p2._hours, {})
 
@@ -581,9 +569,7 @@ class TestExtraPersistence(unittest.TestCase):
         path = os.path.join(p.data_dir, "extras.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"hotwords": ["not", "a", "dict"], "hours": 123}, f)
-        p2 = GroupStatsPlugin(FakeContext(), {})
-        p2.data_dir = p.data_dir
-        p2._load_extras()
+        p2 = GroupStatsPlugin(FakeContext(), {}, data_dir=p.data_dir)
         self.assertEqual(p2._hotwords, {})
         self.assertEqual(p2._hours, {})
 
@@ -592,8 +578,10 @@ class TestExtraPersistence(unittest.TestCase):
         path = os.path.join(p.data_dir, "achievements.json")
         with open(path, "w", encoding="utf-8") as f:
             f.write("[]")
-        p2 = GroupStatsPlugin(FakeContext(), {})
-        p2.data_dir = p.data_dir
+        p2 = GroupStatsPlugin(FakeContext(), {}, data_dir=p.data_dir)
+        self.assertEqual(p2._achievements, {})
+        # 内存中已有数据时，损坏重载也应清空而非保留旧值
+        p2._achievements = {"stale": {"1": {"name": "old", "badges": {}}}}
         p2._load_achievements()
         self.assertEqual(p2._achievements, {})
 
@@ -602,8 +590,9 @@ class TestExtraPersistence(unittest.TestCase):
         path = os.path.join(p.data_dir, "points.json")
         with open(path, "w", encoding="utf-8") as f:
             f.write("null")
-        p2 = GroupStatsPlugin(FakeContext(), {})
-        p2.data_dir = p.data_dir
+        p2 = GroupStatsPlugin(FakeContext(), {}, data_dir=p.data_dir)
+        self.assertEqual(p2._points, {})
+        p2._points = {"stale": {"1": {"name": "old", "points": {}}}}
         p2._load_points()
         self.assertEqual(p2._points, {})
 

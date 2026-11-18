@@ -8,8 +8,9 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime
+from unittest import mock
 
-sys.path.insert(0, r"D:\astrbot\data\plugins")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from astrbot_plugin_group_stats.main import GroupStatsPlugin  # noqa: E402
 
@@ -27,13 +28,9 @@ def tearDownModule():
 
 def make_plugin(config=None, now=None, context=None):
     """构造插件实例：数据目录重定向到临时目录，可注入 mock 时钟"""
-    p = GroupStatsPlugin(context or FakeContext(), config or {})
-    # 清空构造时可能从真实 plugin_data 读到的数据
-    p._stats = {}
-    p._report_dates = {}
     tmp = tempfile.mkdtemp(prefix="group_stats_test_")
     _tmp_dirs.append(tmp)
-    p.data_dir = tmp
+    p = GroupStatsPlugin(context or FakeContext(), config or {}, data_dir=tmp)
     if now is not None:
         p._now = lambda: now
     return p
@@ -407,11 +404,8 @@ class TestPersistence(unittest.TestCase):
         path = os.path.join(p.data_dir, "stats.json")
         self.assertTrue(os.path.exists(path))
         # 新实例从同一目录恢复
-        p2 = GroupStatsPlugin(FakeContext(), {})
-        p2.data_dir = p.data_dir
-        p2._stats = {}
-        p2._report_dates = {}
-        p2._load_all()
+        with mock.patch.object(GroupStatsPlugin, "_now", return_value=FIXED_NOW):
+            p2 = GroupStatsPlugin(FakeContext(), {}, data_dir=p.data_dir)
         self.assertEqual(p2._stats, self.DATA)
 
     def test_save_and_reload_report_dates(self):
@@ -420,9 +414,7 @@ class TestPersistence(unittest.TestCase):
         p._save_report_dates()
         path = os.path.join(p.data_dir, "report_dates.json")
         self.assertTrue(os.path.exists(path))
-        p2 = GroupStatsPlugin(FakeContext(), {})
-        p2.data_dir = p.data_dir
-        p2._load_report_dates()
+        p2 = GroupStatsPlugin(FakeContext(), {}, data_dir=p.data_dir)
         self.assertEqual(p2._report_dates, {"123": "2026-08-15"})
 
     def test_load_corrupted_file_reset(self):
@@ -430,10 +422,7 @@ class TestPersistence(unittest.TestCase):
         path = os.path.join(p.data_dir, "stats.json")
         with open(path, "w", encoding="utf-8") as f:
             f.write("{not-valid-json")
-        p2 = GroupStatsPlugin(FakeContext(), {})
-        p2.data_dir = p.data_dir
-        p2._stats = {}
-        p2._load_stats()
+        p2 = GroupStatsPlugin(FakeContext(), {}, data_dir=p.data_dir)
         self.assertEqual(p2._stats, {})
 
     def test_on_msg_autosave_interval(self):
@@ -527,9 +516,7 @@ class TestConfigDefense(unittest.TestCase):
         path = os.path.join(p.data_dir, "report_dates.json")
         with open(path, "w", encoding="utf-8") as f:
             f.write("[]")
-        p2 = GroupStatsPlugin(FakeContext(), {})
-        p2.data_dir = p.data_dir
-        p2._load_report_dates()
+        p2 = GroupStatsPlugin(FakeContext(), {}, data_dir=p.data_dir)
         self.assertEqual(p2._report_dates, {})
 
 
