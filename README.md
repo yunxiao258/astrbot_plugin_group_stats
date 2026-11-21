@@ -124,3 +124,8 @@ python test_group_stats_extra.py
 ```
 
 测试使用 FakeEvent / FakeContext 替身与临时数据目录，不联网、不写真实 plugin_data。
+
+## 更新记录
+
+### v1.2.0
+- 接入插件生态中枢标准联动协议：支持接收防刷屏共享 Bot 名单排除统计、与生态统一积分账本互通并向面板提供群活跃度聚合

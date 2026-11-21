@@ -16,7 +16,12 @@ from astrbot.api.star import Context, Star, register
 PLUGIN_NAME = "astrbot_plugin_group_stats"
 PLUGIN_AUTHOR = "云晓"
 PLUGIN_DESC = "群活跃度统计与日报/周报"
-PLUGIN_VERSION = "1.1.0"
+try:
+    from .hub_bridge import HUB_PROTOCOL_VERSION, emit_hub_event
+except ImportError:
+    from hub_bridge import HUB_PROTOCOL_VERSION, emit_hub_event
+
+PLUGIN_VERSION = "1.2.0"
 
 # 命令参数解析正则：兼容 /、／ 全角斜杠与无斜杠前缀
 COMMAND_RE = re.compile(r"^[\/／]?\s*群统计\s*(.*)$")
@@ -61,6 +66,7 @@ except AttributeError:
 
 @register(PLUGIN_NAME, PLUGIN_AUTHOR, PLUGIN_DESC, PLUGIN_VERSION)
 class GroupStatsPlugin(Star):
+    HUB_PROTOCOL_VERSION = HUB_PROTOCOL_VERSION
     """群活跃度统计与日报/周报插件"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None, data_dir: str | None = None):
@@ -82,6 +88,7 @@ class GroupStatsPlugin(Star):
         self._report_dates: dict[str, str] = {}
         # 群号 -> 平台实例 ID 映射（从消息事件自动学习，用于日报推送定位平台）
         self._group_platforms: dict[str, str] = {}
+        self._hub_ignored_bots: set[str] = set()
         # 后台日报任务
         self._report_task: asyncio.Task | None = None
         self._report_running = False
@@ -456,7 +463,7 @@ class GroupStatsPlugin(Star):
             if self_id and str(sender_id) == str(self_id):
                 return
             # 配置开启时忽略其他机器人
-            if self._cfg_bool("stats_ignore_bots", True) and self._is_bot_sender(event):
+            if self._cfg_bool("stats_ignore_bots", True) and (self._is_bot_sender(event) or str(sender_id) in getattr(self, "_hub_ignored_bots", set())):
                 return
             text = (event.message_str or "").strip()
             if not text:
@@ -721,6 +728,8 @@ class GroupStatsPlugin(Star):
         pts = entry.setdefault("points", {})
         cur = self._safe_int(pts.get(date), 0)
         pts[date] = min(cur + gained, self.POINTS_DAILY_CAP)
+        if not getattr(self, "_suppress_hub_emit", False):
+            emit_hub_event(PLUGIN_NAME, "group_stats.points_changed", {"group_id": group_id, "user_id": user_id, "nickname": name, "delta": gained, "date": date}, self.context)
 
     def _aggregate_points(self, group_id: str, date_from: str, date_to: str) -> dict:
         """聚合 [date_from, date_to] 区间内各成员积分（含脏数据防御）"""
@@ -1177,6 +1186,7 @@ class GroupStatsPlugin(Star):
         umo = f"{platform}:GroupMessage:{group_id}"
         try:
             await self.context.send_message(umo, MessageChain([Plain(text)]))
+            emit_hub_event(PLUGIN_NAME, "group_stats.daily_report", {"umo": umo, "group_id": group_id, "summary": text[:260]}, self.context)
             return True
         except Exception as e:
             logger.warning(f"推送日报到群 {group_id} 失败: {e}")
@@ -1196,3 +1206,50 @@ class GroupStatsPlugin(Star):
         self._save_extras()
         self._save_achievements()
         self._save_points()
+
+    def hub_status(self) -> dict:
+        today = self._today_str()
+        today_msgs = sum(
+            sum(int(u.get("count", 0)) for u in (days.get(today) or {}).values() if isinstance(u, dict))
+            for days in self._stats.values() if isinstance(days, dict)
+        )
+        return {
+            "version": PLUGIN_VERSION,
+            "status": "online",
+            "metrics": {"统计群数": len(self._stats), "今日消息": today_msgs, "共享忽略Bot": len(self._hub_ignored_bots)},
+            "actions": ["get_daily_summary", "add_points", "add_ignored_bot"],
+        }
+
+    async def hub_action(self, action: str, params: dict | None = None) -> dict:
+        p = params or {}
+        if action == "get_daily_summary":
+            today = str(p.get("date") or self._today_str())
+            gid = str(p.get("group_id") or "").strip()
+            gids = [gid] if gid else list(self._stats.keys())[:20]
+            summary = {}
+            for g in gids:
+                agg = self._aggregate(g, today, today)
+                pts = self._aggregate_points(g, today, today)
+                summary[g] = {"messages": sum(u["count"] for u in agg.values()), "users": len(agg), "top_points": sorted(((v["name"], v["points"]) for v in pts.values()), key=lambda x: -x[1])[:5]}
+            return {"ok": True, "data": {"date": today, "groups": summary}}
+        if action == "add_points":
+            gid = str(p.get("group_id", "")).strip()
+            uid = str(p.get("user_id", "")).strip()
+            nick = str(p.get("nickname", uid))
+            delta = self._safe_int(p.get("delta", 0), 0)
+            if not gid or not uid or delta <= 0:
+                return {"ok": False, "error": "缺少有效 group_id / user_id / delta"}
+            self._suppress_hub_emit = True
+            try:
+                self._add_points(gid, uid, nick, self._today_str(), delta)
+                self._save_points()
+            finally:
+                self._suppress_hub_emit = False
+            return {"ok": True, "data": {"group_id": gid, "user_id": uid, "added": delta}}
+        if action == "add_ignored_bot":
+            ids = [str(x).strip() for x in (p.get("bot_ids") or []) if str(x).strip()]
+            if p.get("bot_id"):
+                ids.append(str(p["bot_id"]).strip())
+            self._hub_ignored_bots.update(ids)
+            return {"ok": True, "data": {"ignored_bots": sorted(self._hub_ignored_bots)}}
+        return {"ok": False, "error": f"不支持的动作：{action}"}
